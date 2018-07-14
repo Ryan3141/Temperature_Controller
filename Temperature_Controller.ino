@@ -1,28 +1,36 @@
+#include <Adafruit_MAX31856.h>
 #include <PID_v1.h>
 #include <Adafruit_MAX31865.h>
 
-#include "OneEuroFilter.h"
+//#include "OneEuroFilter.h"
 #include "Device_Communicator.h"
 
+const char* ssid = "Micro-Physics-Lab";
+const char* password = "dangerouslyirrelevant";
+const char* who_i_listen_to = "Temperature Controller";
+const unsigned int port_to_use = 6543;
+
 // Use software SPI: CS, DI, DO, CLK
-Adafruit_MAX31865 max = Adafruit_MAX31865( D3, D7, D6, D5 );
+Adafruit_MAX31865 max31865 = Adafruit_MAX31865( D3, D7, D6, D5 );
 
 Device_Communicator wifi_devices;
 
 // use hardware SPI, just pass in the CS pin
-//Adafruit_MAX31856 max = Adafruit_MAX31856(10);
+//Adafruit_MAX31856 sensor = Adafruit_MAX31856( D0, D7, D6, D5 );
 
 double PID_Current_Temperature = 0;
 double PID_Output = 0;
 double PID_Set_Temperature = NAN;
 //PID pid( &PID_Current_Temperature, &PID_Output, &previous_data.set_temp, 0.3, 0.0, 0.6, DIRECT );
 PID pid( &PID_Current_Temperature, &PID_Output, &PID_Set_Temperature, 300, 80, 40, DIRECT );
+void Send_Message( const String & message, const Device_Communicator & devices = wifi_devices );
+
 bool Output_On = false;
 
-void Check_Temp_Sensor_For_Error( Adafruit_MAX31865 & max )
+bool Check_Temp_Sensor_For_Error( Adafruit_MAX31865 & max31865 )
 {
 	// Check and print any faults
-	uint8_t fault = max.readFault();
+	uint8_t fault = max31865.readFault();
 	if( fault )
 	{
 		Serial.print( "Fault 0x" ); Serial.println( fault, HEX );
@@ -50,8 +58,12 @@ void Check_Temp_Sensor_For_Error( Adafruit_MAX31865 & max )
 		{
 			Serial.println( "Under/Over voltage" );
 		}
-		max.clearFault();
+		max31865.clearFault();
+
+		return false;
 	}
+
+	return true;
 }
 
 void Run_Command( const String & command )
@@ -64,10 +76,10 @@ void Run_Command( const String & command )
 	if( l_command.startsWith( "set temp " ) )
 	{
 		String data = l_command.substring( 9 );
-		Serial.println( "set temp" + data );
+		//Serial.println( "set temp" + data );
 		//digitalWrite( D4, data.toInt() != 0 );
 		PID_Set_Temperature = data.toFloat();
-		Serial.println( "Temperature setpoint changed to " + String( PID_Set_Temperature ) );
+		Send_Message( "Temperature setpoint changed to " + String( PID_Set_Temperature ) + "\n" );
 		//pid.SetSetpoint( previous_data.set_temp );
 	}
 	else if( l_command.startsWith( "set pid " ) )
@@ -78,25 +90,39 @@ void Run_Command( const String & command )
 
 		pid.SetTunings( data1.toFloat(), data2.toFloat(), data3.toFloat() );
 
-		Serial.println( "PID coefficients changed to " + String( pid.GetKp() ) + " " + String( pid.GetKi() ) + " " + String( pid.GetKd() ) );
+		Send_Message( "PID coefficients changed to " + String( pid.GetKp() ) + " " + String( pid.GetKi() ) + " " + String( pid.GetKd() ) + "\n" );
+	}
+	else if( l_command.startsWith( "get pid " ) )
+	{
+		Send_Message( "PID coefficients = " + String( pid.GetKp() ) + " " + String( pid.GetKi() ) + " " + String( pid.GetKd() ) + "\n" );
 	}
 	else if( l_command.startsWith( "turn off" ) )
 	{
 		Output_On = false;
 		analogWrite( D2, 0 );
-		Serial.println( "Turning output off" );
+		Send_Message( "Turning output off\n" );
 	}
 	else if( l_command.startsWith( "turn on" ) )
 	{
 		Output_On = true;
-		Serial.println( "Turning output on" );
+		Send_Message( "Turning output on\n" );
 	}
 }
 
 void Work_With_Serial_Connection()
 {
+	static bool serial_is_connected = false;
 	if( !Serial.available() )
+	{
+		serial_is_connected = false;
 		return;
+	}
+
+	if( serial_is_connected == false )
+	{
+		Serial.println( who_i_listen_to );
+	}
+	serial_is_connected = true;
 
 	Serial.println( "Stuff to read" );
 	static String computer_serial_partial_message;
@@ -123,7 +149,7 @@ void Work_With_Serial_Connection()
 void setup()
 {
 	Serial.begin( 115200 );
-	Serial.println( "MAX31856 thermocouple test" );
+	//Serial.println( "MAX31856 thermocouple test" );
 
 	{ // PID initialization
 		pid.SetOutputLimits( 0, 1023 );
@@ -132,44 +158,48 @@ void setup()
 		analogWrite( D2, 0 );
 	}
 
-	max.begin( MAX31865_2WIRE );
-
-	const char* ssid = "Micro-Physics-Lab";
-	const char* password = "dangerouslyirrelevant";
-	const char* who_i_listen_to = "Temperature Controller";
-	const unsigned int port_to_use = 6543;
-	wifi_devices.Init( ssid, password, who_i_listen_to, "", port_to_use );
-	wifi_devices.Connect_Controller_Listener( []( const Connection & c, const String & command ) { Run_Command( command ); } );
-	pinMode( D4, OUTPUT );
-	digitalWrite( D4, LOW );
+	max31865.begin( MAX31865_2WIRE );
+	//sensor.begin();
+	//sensor.setThermocoupleType( MAX31856_TCTYPE_K );
+	wifi_devices.Init( ssid, password, who_i_listen_to, "", port_to_use, Pin(D4) );
 }
 
-void Send_Message( const String & message, const Device_Communicator & devices = wifi_devices )
+void Send_Message( const String & message, const Device_Communicator & devices )
 {
 	Serial.print( message );
+	Serial.flush();
 	devices.Send_Client_Data( message );
 }
 
 void loop()
 {
-	const float Reference_Resistor = 4300.0;
+	//const float Reference_Resistor = 4300.0;
+	const float Reference_Resistor = 4235.0;
+	//const float Reference_Resistor = 3271.0;
 	static unsigned long previous_reading_time = millis();
 	unsigned long current_time = millis();
 	if( current_time - previous_reading_time >= 500 ) // All temp sensors set to same resolution
 	{
-		//static uint16_t rtd = 4600;
-		//rtd += rand() % 20 - 9;
-		uint16_t rtd = max.readRTD();
-		Send_Message( "RTD value: " + String( rtd ) + "\n" );
-		float ratio = rtd;
-		ratio /= 32768;
-		Send_Message( "Ratio = " + String( ratio, 8 ) + "\n" );
-		Send_Message( "Resistance = " + String( Reference_Resistor * ratio, 8 ) + "\n" );
-		float temperature = max.temperature( 1000, Reference_Resistor );
-		//float temperature = Newtons_Method( ratio * Reference_Resistor / 1000 );
-		Send_Message( "Temperature = " + String( temperature ) + "\n" );
+		if( Check_Temp_Sensor_For_Error( max31865 ) )
+		{
+			//static uint16_t rtd = 4600;
+			//rtd += rand() % 20 - 9;
+			uint16_t rtd = max31865.readRTD();
+			Send_Message( "RTD value: " + String( rtd ) + "\n" );
+			double ratio = rtd / 32768.;
+			Send_Message( "Ratio = " + String( ratio, 8 ) + "\n" );
+			Send_Message( "Resistance = " + String( Reference_Resistor * ratio, 8 ) + "\n" );
+			//float temperature = max31865.temperature( 1000, Reference_Resistor );
+			float temperature = Newtons_Method( ratio * Reference_Resistor / 1000 );
+			//float temperature = sensor.readThermocoupleTemperature();
+			Send_Message( "Temperature = " + String( temperature ) + "\n" );
 
-		PID_Current_Temperature = temperature;
+			PID_Current_Temperature = temperature;
+		}
+		else
+		{
+			//Serial.println( "Skipped due to error" );
+		}
 		previous_reading_time = current_time;
 	}
 
@@ -185,7 +215,6 @@ void loop()
 		}
 	}
 
-	Check_Temp_Sensor_For_Error( max );
 	delay( 10 );
 }
 
@@ -206,7 +235,7 @@ void setup()
 		Serial.print( String( Adafruit_MAX31865_temperature( R, 1000, 4300 ) ) + "\t" );
 	Serial.println();
 
-	max.begin( MAX31865_2WIRE );  // set to 2WIRE or 4WIRE as necessary
+	max31865.begin( MAX31865_2WIRE );  // set to 2WIRE or 4WIRE as necessary
 }
 
 void loop()
@@ -219,7 +248,7 @@ void loop()
 	{
 		static uint16_t rtd = 4600;
 		rtd += rand() % 20 - 9;
-		//uint16_t rtd = max.readRTD();
+		//uint16_t rtd = max31865.readRTD();
 
 		//Serial.print( "RTD value: " ); Serial.println( rtd );
 		//float ratio = rtd;
@@ -246,7 +275,7 @@ void loop()
 		}
 	}
 
-	Check_Temp_Sensor_For_Error( max );
+	Check_Temp_Sensor_For_Error( max31865 );
 	delay( 10 );
 }
 #endif

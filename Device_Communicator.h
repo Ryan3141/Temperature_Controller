@@ -14,18 +14,23 @@
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 
+#include "Handy_Types.h"
+
 struct Connection
 {
+	Connection() {}
+	Connection( IPAddress ip ) : ip( ip ) {}
+
 	IPAddress ip;
 	WiFiClient client;
-	String partial_message;
+	String partial_message{ "" };
+	Run_Periodically timeout{ Time::Seconds( 10 ) };
 };
 
 class Device_Communicator
 {
 public:
-	Device_Communicator();
-	void Init( const char* SSID, const char* password, const char* who_i_listen_to, const char* initial_message, unsigned int localUdpPort );
+	void Init( const char* SSID, const char* password, const char* who_i_listen_to, const char* initial_message, unsigned int localUdpPort, Pin indicator_led_pin );
 	void Update();
 
 	void Connect_Controller_Listener( std::function<void( const Connection & c, const String & command )> callback );
@@ -33,8 +38,10 @@ public:
 	void Send_Client_Data( Connection & c, const String & message ) const;
 
 private:
+	bool Check_Wifi_Status();
 	void Check_For_New_Clients();
-	void Connect_To_Router( const char* router_ssid, const char* router_password );
+	void Check_For_Disconnects();
+	bool Attempt_Connect_To_Router( const char* router_ssid, const char* router_password );
 	void Read_Client_Data( Connection & c );
 
 	WiFiUDP Udp;
@@ -43,8 +50,10 @@ private:
 	String device_listener;
 	String header_data;
 	std::vector< std::function<void( const Connection & c, const String & command )> > controller_callbacks;
-	unsigned long update_wait_time{ 100 }; // Wait between updates in milliseconds
-	unsigned long previous_reading_time{ millis() };
+	Run_Periodically update_wait{ Time::Milliseconds( 1000 ) }; // Wait between updates in milliseconds
+	Run_Periodically disconnected_light_flash{ Time::Milliseconds( 400 ) }; // Wait between updates in milliseconds
+	Pin indicator_led{ Pin::None };
+	bool wifi_was_connected{ false };
 };
 
 #endif

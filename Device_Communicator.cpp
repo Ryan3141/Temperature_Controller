@@ -4,57 +4,43 @@
 
 #include "Device_Communicator.h"
 
+#include <algorithm>
 
-
-Device_Communicator::Device_Communicator()
-{
-	Connect_Controller_Listener( []( const Connection & c, const String & command ) {} );
-}
-
-void Device_Communicator::Init( const char* SSID, const char* password, const char* who_i_listen_to, const char* initial_message, unsigned int localUdpPort )
+void Device_Communicator::Init( const char* SSID, const char* password, const char* who_i_listen_to, const char* initial_message, unsigned int localUdpPort, Pin indicator_led_pin )
 {
 	local_udp_port = localUdpPort;
 	Udp.begin( local_udp_port );
 	//Udp.setTimeout( 100 );
 
-	Connect_To_Router( SSID, password );
-
 	device_listener = who_i_listen_to;
 	header_data = initial_message;
+	indicator_led = indicator_led_pin;
+	indicator_led.Set_To_Output();
+	indicator_led.Set( HIGH ); // Turn light off until it's connected
+
+	Attempt_Connect_To_Router( SSID, password );
 }
 
 void Device_Communicator::Update()
 {
-	unsigned long current_time = millis();
-	if( current_time - previous_reading_time < update_wait_time )
+	if( !update_wait.Is_Ready() )
 		return;
-	previous_reading_time = current_time;
 	
-	//if( current_time - previous_reading_time > update_wait_time )
+	if( !Check_Wifi_Status() )
+		return;
+
+	Check_For_New_Clients();
+
+	Check_For_Disconnects();
+
+	for( auto & c : active_clients )
 	{
-		Check_For_New_Clients();
-		previous_reading_time = current_time;
-	}
-
-	for( auto c_iterator = active_clients.begin(); c_iterator != active_clients.end(); )
-	{
-		//Serial.println( "debug " + String(debug++) );
-		Connection & c = *c_iterator;
-		if( !c.client.connected() )
-		{
-			Serial.println( c.ip.toString() + ": disconnected" );
-			c_iterator = active_clients.erase( c_iterator );
-
-			continue;
-		}
-		else
-		{
-			++c_iterator;
-		}
-
 		// If client is saying something
 		if( c.client.available() )
+		{
 			Read_Client_Data( c );
+			c.timeout.Reset();
+		}
 	}
 }
 
@@ -81,16 +67,27 @@ void Device_Communicator::Check_For_New_Clients()
 
 	// Don't add duplicates
 	bool already_connected = false;
-	for( Connection & c : active_clients )
+	for( auto c_iterator = active_clients.begin(); c_iterator != active_clients.end(); ++c_iterator )
 	{
+		Connection & c = *c_iterator;
 		if( c.ip == incoming_ip )
+		{
+			//Serial.println( c.ip.toString() + ": disconnected" );
+			//c_iterator = active_clients.erase( c_iterator );
 			already_connected = true;
+		}
+		//else
+		//{
+		//	++c_iterator;
+		//}
 	}
 	if( already_connected )
+	{
+		Serial.println( "Avoiding adding duplicate: " + device_listener );
 		return;
-
+	}
 	// Attempt to connect to ip that just pinged us
-	active_clients.push_back( { incoming_ip, WiFiClient() } );
+	active_clients.push_back( Connection{ incoming_ip } );
 	Connection & c = active_clients.back();
 	c.client.connect( incoming_ip, local_udp_port );
 	if( c.client.connected() )
@@ -100,7 +97,32 @@ void Device_Communicator::Check_For_New_Clients()
 		c.client.setTimeout( 10 ); // Only grab the data if it's ready already
 	}
 	else
+	{
+		c.client.stop();
+		active_clients.pop_back();
 		Serial.printf( "Failed to connect to %s\n", incoming_ip.toString().c_str() );
+	}
+}
+
+void Device_Communicator::Check_For_Disconnects()
+{
+	// Find any connections to be removed
+	auto to_be_removed =
+		std::remove_if( active_clients.begin(), active_clients.end(),
+		[]( Connection & c )
+	{
+		return !c.client.connected() || c.client.status() == CLOSED || c.timeout.Is_Ready();
+	} );
+
+	// Perform finishing functions on closing connections
+	for( auto c = to_be_removed; c != active_clients.end(); ++c )
+	{
+		c->client.stop();
+		Serial.println( c->ip.toString() + ": disconnected" );
+	}
+
+	// Finally delete the connection entries
+	active_clients.erase( to_be_removed, active_clients.end() );
 }
 
 void Device_Communicator::Connect_Controller_Listener( std::function<void( const Connection & c, const String & command )> callback )
@@ -111,9 +133,11 @@ void Device_Communicator::Connect_Controller_Listener( std::function<void( const
 void Device_Communicator::Read_Client_Data( Connection & c )
 {
 	c.partial_message = c.partial_message + c.client.readString();
-	int end_of_line = c.partial_message.indexOf( '\n' );
-	if( end_of_line != -1 ) // wait for end of client's request, that is marked with an empty line
-	{
+
+	for( int end_of_line = c.partial_message.indexOf( '\n' );
+		 end_of_line != -1;
+		 end_of_line = c.partial_message.indexOf( '\n' ) )
+	{ // wait for end of client's request, that is marked with an empty line
 		String command = c.partial_message.substring( 0, end_of_line );
 		c.partial_message = c.partial_message.substring( end_of_line + 1, c.partial_message.length() );
 
@@ -136,31 +160,56 @@ void Device_Communicator::Send_Client_Data( Connection & c, const String & messa
 	c.client.print( message );
 }
 
-void Device_Communicator::Connect_To_Router( const char* router_ssid, const char* router_password )
+bool Device_Communicator::Check_Wifi_Status()
 {
-	delay( 10 );
+	bool wifi_is_connected = false;
+	switch( WiFi.status() )
+	{
+		case WL_CONNECTED:
+			if( !wifi_was_connected )
+			{
+				indicator_led.Set( LOW ); // Turn light on to show it's connected
+				Serial.println( "WiFi connected" );
+				Serial.println( "IP address: " );
+				Serial.println( WiFi.localIP() );
+				wifi_was_connected = true;
+			}
+			wifi_is_connected = true;
+		break;
+		case WL_CONNECT_FAILED:
+		case WL_CONNECTION_LOST:
+		case WL_DISCONNECTED:
+		case WL_NO_SSID_AVAIL:
+		if( wifi_was_connected )
+			{
+				Serial.println( "WiFi disconnected" );
+				wifi_was_connected = false;
+			}
+			if( disconnected_light_flash.Is_Ready() )
+			{
+				disconnected_light_flash.Reset();
+				indicator_led.Toggle(); // Turn light on to show it's connected
+			}
+			wifi_is_connected = false;
+		break;
+		default:
+		Serial.print( "Wifi status not dealt with: " );
+		Serial.println( WiFi.status() );
+		break;
+	}
 
+	return wifi_is_connected;
+}
+
+bool Device_Communicator::Attempt_Connect_To_Router( const char* router_ssid, const char* router_password )
+{
+	delay( 500 );
 	// We start by connecting to a WiFi network
 	WiFi.begin( router_ssid, router_password );
 
 	Serial.println();
-	Serial.println();
-	Serial.print( "Waiting for WiFi" );
-
-	while( WiFi.status() != WL_CONNECTED )
-	{
-		Serial.print( "." );
-		delay( 500 );
-	}
-
-	Serial.println( "" );
-	Serial.println( "WiFi connected" );
-	Serial.println( "IP address: " );
-	Serial.println( WiFi.localIP() );
-	//server.begin();
-	//Serial.println( "Server started" );
-
-	delay( 500 );
+	Serial.print( "Attempting to connect to WiFi: " );
+	Serial.println( router_ssid );
 }
 
 
