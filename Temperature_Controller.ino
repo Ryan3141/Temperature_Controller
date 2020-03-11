@@ -1,31 +1,154 @@
-#include <Adafruit_MAX31856.h>
+#include <array>
+#include <SPI.h>
+#include <Adafruit_MAX31855.h>
 #include <PID_v1.h>
 #include <Adafruit_MAX31865.h>
 
 //#include "OneEuroFilter.h"
 #include "Device_Communicator.h"
 
-const char* ssid = "Micro-Physics-Lab";
-const char* password = "dangerouslyirrelevant";
+const char* ssid = "";
+const char* password = "";
 const char* who_i_listen_to = "Temperature Controller";
 const unsigned int port_to_use = 6543;
 
+//const int D0 = 26;
+//const int D1 = 22;
+//const int D2 = 21;
+//const int D3 = 17;
+//const int D4 = 16;
+//const int D5 = 18;
+//const int D6 = 19;
+//const int D7 = 23;
+//const int D8 = 5;
+
+const int heater_pin = 33;
+const std::array<int, 4> v_plus_pins = { 32, 4, 17, 16 };
+const std::array<int, 4> v_minus_pins = { 27, 22, 25, 21 };
+//const std::array<int, 4> v_minus_pins = { 21, 25, 22, 27 };
+
+// Flipped around plugs
+//const std::array<int, 16> mux_plus_pads = { 2, 1, 3, 6, 5, 8, 10, 9, 19, 20, 18, 15, 16, 13, 11, 12 };
+//const std::array<int, 16> mux_minus_pads = { 1, 4, 3, 6, 8, 7, 10, 9, 20, 17, 18, 15, 13, 14, 11, 12 };
+//const std::array<int, 16> mux_plus_pads = { 1, 2, 4, 5, 6, 7, 9, 10, 20, 19, 17, 16, 15, 14, 12, 11 };
+//const std::array<int, 16> mux_minus_pads = { 2, 3, 4, 5, 7, 8, 9, 10, 20, 19, 18, 17, 15, 14, 13, 12 };
+//const std::array<int, 16> mux_plus_pads = { 1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20 };
+//const std::array<int, 16> mux_minus_pads = { 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 19, 20 };
+const std::array<int, 16> mux_plus_pads = { 1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20 };
+const std::array<int, 16> mux_minus_pads = { 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 19, 20 };
+
+void Find_Slowdown()
+{
+	static unsigned long previous_reading_time = millis();
+	unsigned long current_time = millis();
+	if( current_time - previous_reading_time >= 5000 )
+	{
+		if( current_time - previous_reading_time >= 10000 )
+		{
+			Serial.println( "----------------------------------------------------" );
+		}
+		Serial.println( current_time );
+		previous_reading_time = current_time;
+	}
+}
+std::tuple<int, int, bool> Get_Mux_Values_For_Pads( int pad1, int pad2 )
+{
+	auto pad_plus_i = std::find( mux_plus_pads.begin(), mux_plus_pads.end(), pad1 );
+	auto pad_minus_i = std::find( mux_minus_pads.begin(), mux_minus_pads.end(), pad2 );
+	int mux_plus_value = std::distance( mux_plus_pads.begin(), pad_plus_i );
+	int mux_minus_value = std::distance( mux_minus_pads.begin(), pad_minus_i );
+	bool is_reversed = false;
+
+	if( pad_plus_i == mux_plus_pads.end() || pad_minus_i == mux_minus_pads.end() ) // Can't make the connection one way, try swapping
+	{
+		is_reversed = true;
+		pad_plus_i = std::find( mux_plus_pads.begin(), mux_plus_pads.end(), pad2 );
+		pad_minus_i = std::find( mux_minus_pads.begin(), mux_minus_pads.end(), pad1 );
+
+		if( pad_plus_i == mux_plus_pads.end() || pad_minus_i == mux_minus_pads.end() )
+		{
+			std::tuple<int, int, bool> error_return_values { -1, -1, false };
+			return error_return_values; // Unable to make connection
+		}
+		mux_plus_value = std::distance( mux_plus_pads.begin(), pad_plus_i );
+		mux_minus_value = std::distance( mux_minus_pads.begin(), pad_minus_i );
+	}
+
+	std::tuple<int, int, bool> return_values { mux_plus_value, mux_minus_value, is_reversed };
+	return return_values;
+}
+
+void Initialize_Mux_Pins()
+{
+	for( int pin : v_plus_pins )
+	{
+		pinMode( pin, OUTPUT );
+		digitalWrite( pin, LOW );
+	}
+	for( int pin : v_minus_pins )
+	{
+		pinMode( pin, OUTPUT );
+		digitalWrite( pin, LOW );
+	}
+}
+
+void Set_Mux_Value( int i_plus, int i_minus )
+{
+	//Serial.println( "Changing PINS: " + String( i_plus ) + " " + String( i_minus ) );
+	for( int pin_i = 0; pin_i < v_plus_pins.size(); pin_i++ )
+	{
+		int pin_plus = v_plus_pins[ pin_i ];
+		int pin_minus = v_minus_pins[ pin_i ];
+		//     Serial.println( i & (1 << pin_i) );
+		if( i_plus & (1 << pin_i) )
+			digitalWrite( pin_plus, HIGH );
+		else
+			digitalWrite( pin_plus, LOW );
+		if( i_minus & (1 << pin_i) )
+			digitalWrite( pin_minus, HIGH );
+		else
+			digitalWrite( pin_minus, LOW );
+	}
+}
+
+// Arduino like analogWrite
+// value has to be between 0 and valueMax
+void analogWrite( uint8_t channel, uint32_t value, uint32_t valueMax = 8191 )
+{
+	// calculate duty, 8191 from 2 ^ 13 - 1
+	uint32_t duty = (8191 / valueMax) * min( value, valueMax );
+
+	// write duty to LEDC
+	ledcWrite( channel, duty );
+}
+
+
 // Use software SPI: CS, DI, DO, CLK
-Adafruit_MAX31865 max31865 = Adafruit_MAX31865( D3, D7, D6, D5 );
+Adafruit_MAX31865 max31865 = Adafruit_MAX31865( 5, 23, 19, 18 );
+//Adafruit_MAX31865 max31865 = Adafruit_MAX31865( 5, D7, D6, D5 );
 
 Device_Communicator wifi_devices;
 
-// use hardware SPI, just pass in the CS pin
+// use hardware SPI, just pass in the CS pin CS, DI, DO, CLK
+//Adafruit_MAX31856 thermocouple_sensor = Adafruit_MAX31855( 13, 23, 19, 18 );
 //Adafruit_MAX31856 sensor = Adafruit_MAX31856( D0, D7, D6, D5 );
+Adafruit_MAX31855 thermocouple_sensor = Adafruit_MAX31855( 18, 13, 19 );
+
+// Setup timer and attach timer to a led pin
+// use first channel of 16 channels (started from zero)
+const int LEDC_CHANNEL_0 = 0;
+// use 13 bit precission for LEDC timer
+const int LEDC_TIMER_13_BIT = 13;
+// use 5000 Hz as a LEDC base frequency
+const int LEDC_BASE_FREQ = 5000;
 
 double PID_Current_Temperature = 0;
 double PID_Output = 0;
 double PID_Set_Temperature = NAN;
 //PID pid( &PID_Current_Temperature, &PID_Output, &previous_data.set_temp, 0.3, 0.0, 0.6, DIRECT );
 PID pid( &PID_Current_Temperature, &PID_Output, &PID_Set_Temperature, 300, 80, 40, DIRECT );
-void Send_Message( const String & message, const Device_Communicator & devices = wifi_devices );
+void Send_Message( const String & message, Device_Communicator & devices = wifi_devices );
 
-bool Output_On = false;
 
 bool Check_Temp_Sensor_For_Error( Adafruit_MAX31865 & max31865 )
 {
@@ -68,9 +191,9 @@ bool Check_Temp_Sensor_For_Error( Adafruit_MAX31865 & max31865 )
 
 void Run_Command( const String & command )
 {
-	if( command == "PING" )
+	if( command == "PING;" )
 		return;
-	Serial.print( command + "\n" );
+	//Serial.print( command + "\n" );
 	String l_command = command;
 	l_command.toLowerCase();
 	if( l_command.startsWith( "set temp " ) )
@@ -98,14 +221,35 @@ void Run_Command( const String & command )
 	}
 	else if( l_command.startsWith( "turn off" ) )
 	{
-		Output_On = false;
-		analogWrite( D2, 0 );
+		pid.SetMode( MANUAL );
+		PID_Output = 0;
+		analogWrite( LEDC_CHANNEL_0, 0 );
 		Send_Message( "Turning output off\n" );
+		Send_Message( "PID Output: 0\n" );
 	}
 	else if( l_command.startsWith( "turn on" ) )
 	{
-		Output_On = true;
+		pid.SetMode( AUTOMATIC );
 		Send_Message( "Turning output on\n" );
+	}
+	else if( l_command.startsWith( "set pads " ) )
+	{
+		String data1 = l_command.substring( 9 );
+		String data2 = data1.substring( data1.indexOf( ' ' ) + 1 );
+		int pad1 = data1.toInt();
+		int pad2 = data2.toInt();
+		std::tuple<int, int, bool> get_values = Get_Mux_Values_For_Pads( pad1, pad2 );
+		//Serial.println( "Debug: " + String( data1.toInt() ) + " " + String( data2.toInt() ) );
+		Serial.println( "Debug: " + String( std::get<0>( get_values ) ) + " " + String( std::get<1>( get_values ) ) );
+		if( std::get<0>( get_values ) == -1 )
+			Send_Message( "Unable to connect pads\n" );
+		else
+		{
+			Set_Mux_Value( std::get<0>( get_values ), std::get<1>( get_values ) );
+			//Send_Message( "Pads connected " + String( get_values[ 0 ] ) + " " + String( get_values[ 1 ] ) + "\n" );
+			bool is_reversed = std::get<2>( get_values );
+			Send_Message( "Pads connected " + String( pad1 ) + " " + String( pad2 ) + (is_reversed ? " reversed\n" : "\n") );
+		}
 	}
 }
 
@@ -142,6 +286,7 @@ void Work_With_Serial_Connection()
 		Run_Command( command );
 
 		end_of_line = partial_message.indexOf( ';' );
+		delay(0);
 	}
 }
 
@@ -149,71 +294,126 @@ void Work_With_Serial_Connection()
 void setup()
 {
 	Serial.begin( 115200 );
-	//Serial.println( "MAX31856 thermocouple test" );
+	delay( 4000 );
+	Initialize_Mux_Pins();
 
 	{ // PID initialization
-		pid.SetOutputLimits( 0, 1023 );
+		pid.SetOutputLimits( 0, 8191 );
 		pid.SetMode( AUTOMATIC );
-		pinMode( D2, OUTPUT );
-		analogWrite( D2, 0 );
+//		pinMode( heater_pin, OUTPUT );
+//		analogWrite( heater_pin, 0 );
+
+		ledcSetup( LEDC_CHANNEL_0, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT );
+		ledcAttachPin( heater_pin, LEDC_CHANNEL_0 );
+		analogWrite( LEDC_CHANNEL_0, 0 );
 	}
 
-	max31865.begin( MAX31865_2WIRE );
+	bool success = max31865.begin( MAX31865_2WIRE );
+	if( success )
+		Serial.println( "RTD began successfully" );
 	//sensor.begin();
 	//sensor.setThermocoupleType( MAX31856_TCTYPE_K );
-	wifi_devices.Init( ssid, password, who_i_listen_to, "", port_to_use, Pin(D4) );
+	wifi_devices.Connect_Controller_Listener( []( const Connection & c, const String & command ) { Run_Command( command ); } );
+	wifi_devices.Init( ssid, password, who_i_listen_to, "", port_to_use, Pin(2) );
 }
 
-void Send_Message( const String & message, const Device_Communicator & devices )
+void Send_Message( const String & message, Device_Communicator & devices )
 {
 	Serial.print( message );
-	Serial.flush();
+	//Serial.flush();
 	devices.Send_Client_Data( message );
 }
 
 void loop()
 {
-	//const float Reference_Resistor = 4300.0;
-	const float Reference_Resistor = 4235.0;
+	Find_Slowdown();
+
+	const float Reference_Resistor = 4300.0;
+	//const float Reference_Resistor = 4235.0;
 	//const float Reference_Resistor = 3271.0;
 	static unsigned long previous_reading_time = millis();
 	unsigned long current_time = millis();
 	if( current_time - previous_reading_time >= 500 ) // All temp sensors set to same resolution
 	{
+		//Serial.print( "A" );
+		//Send_Message( "Temperature = 0\n" );
+		if( 0 )
+		{
+			static double debug_temp = 0;
+			Send_Message( "Temperature = " + String( debug_temp ) + "\n" );
+			debug_temp += ((rand() % 1024) - 512) / 1024.;
+			PID_Current_Temperature = debug_temp;
+		}
 		if( Check_Temp_Sensor_For_Error( max31865 ) )
 		{
+			//uint16_t rtd = max31865.readRTD();
 			//static uint16_t rtd = 4600;
 			//rtd += rand() % 20 - 9;
 			uint16_t rtd = max31865.readRTD();
 			Send_Message( "RTD value: " + String( rtd ) + "\n" );
 			double ratio = rtd / 32768.;
 			Send_Message( "Ratio = " + String( ratio, 8 ) + "\n" );
-			Send_Message( "Resistance = " + String( Reference_Resistor * ratio, 8 ) + "\n" );
+			double resistance_now = ratio * Reference_Resistor;
+			Send_Message( "Resistance = " + String( resistance_now, 8 ) + "\n" );
 			//float temperature = max31865.temperature( 1000, Reference_Resistor );
-			float temperature = Newtons_Method( ratio * Reference_Resistor / 1000 );
-			//float temperature = sensor.readThermocoupleTemperature();
-			Send_Message( "Temperature = " + String( temperature ) + "\n" );
+			if( resistance_now > 3000.0 || resistance_now < 100.0 )
+			{
+				Send_Message( "Error With Sensor!\n" );
+			}
+			else
+			{
+				double resistance_at_zero_C = 1000.;
+				double ratio_of_zero_C_resistance = resistance_now / resistance_at_zero_C;
+				float temperature = Newtons_Method( ratio_of_zero_C_resistance );
+				//float temperature = Newtons_Method( ratio * Reference_Resistor / 1000 );
+				//float temperature = sensor.readThermocoupleTemperature();
+				Send_Message( "Temperature = " + String( temperature ) + "\n" );
 
-			PID_Current_Temperature = temperature;
+				PID_Current_Temperature = temperature;
+			}
 		}
 		else
 		{
 			//Serial.println( "Skipped due to error" );
 		}
+		
+		{
+			//Serial.print( "Before: " );
+			//Serial.println( millis() );
+			double internal_temperature = thermocouple_sensor.readInternal();
+			//Serial.print( "Middle: " );
+			//Serial.println( millis() );
+			Send_Message( "Cold Junction Temperature = " + String( internal_temperature ) + "\n" );
+			//Serial.print( "After1: " );
+			//Serial.println( millis() );
+			double c = thermocouple_sensor.readCelsius();
+			//Serial.print( "After2: " );
+			//Serial.println( millis() );
+			if( isnan( c ) )
+				Send_Message( "Something wrong with thermocouple!\n" );
+			else
+				Send_Message( "Thermocouple Temperature = " + String( c ) + "\n" );
+			//Serial.print( "After3: " );
+			//Serial.println( millis() );
+		}
 		previous_reading_time = current_time;
 	}
 
 	wifi_devices.Update();
-	Work_With_Serial_Connection();
+ // delay(0);
+	//Work_With_Serial_Connection();
 
 	{ // Update PID Stuff
-		if( !isnan( PID_Set_Temperature ) && pid.Compute() && Output_On )
+		if( !isnan( PID_Set_Temperature ) && pid.Compute() )
 		{
-			analogWrite( D2, int( PID_Output ) );
+			analogWrite( LEDC_CHANNEL_0, int( PID_Output ) );
 			//if( !Serial.available() )
-			Send_Message( "PID Output: " + String( PID_Output ) + " Setpoint: " + String( PID_Set_Temperature ) + " Temp: " + String( PID_Current_Temperature ) + "\n" );
+			Send_Message( "PID Output: " + String( PID_Output * (100.0 / 8191) ) + " Setpoint: " + String( PID_Set_Temperature ) + " Temp: " + String( PID_Current_Temperature ) + "\n" );
 		}
 	}
+
+	//std::array<int, 2> get_values = Get_Mux_Values_For_Pads( 4, 5 );
+	//Set_Mux_Value( get_values[ 0 ], get_values[ 1 ] );
 
 	delay( 10 );
 }
@@ -227,8 +427,8 @@ void setup()
 	{ // PID initialization
 		pid.SetOutputLimits( 0, 1023 );
 		pid.SetMode( AUTOMATIC );
-		pinMode( D2, OUTPUT );
-		analogWrite( D2, 0 );
+		pinMode( heater_pin, OUTPUT );
+		analogWrite( heater_pin, 0 );
 	}
 
 	for( uint16_t R = 1; R < 32768; R++ )
@@ -246,22 +446,23 @@ void loop()
 
 	if( current_time - previous_reading_time >= 500 ) // All temp sensors set to same resolution
 	{
-		static uint16_t rtd = 4600;
-		rtd += rand() % 20 - 9;
-		//uint16_t rtd = max31865.readRTD();
+		//static uint16_t rtd = 4600;
+		//rtd += rand() % 20 - 9;
+		uint16_t rtd = max31865.readRTD();
 
-		//Serial.print( "RTD value: " ); Serial.println( rtd );
-		//float ratio = rtd;
-		//ratio /= 32768;
-		//Serial.print( "Ratio = " ); Serial.println( ratio, 8 );
-		//Serial.print( "Resistance = " ); Serial.println( Reference_Resistor * ratio, 8 );
-		//float temperature = Translate_Temperature( rtd, 1000, Reference_Resistor );
+		Serial.print( "RTD value: " ); Serial.println( rtd );
+		float ratio = rtd;
+		ratio /= 32768;
+		Serial.print( "Ratio = " ); Serial.println( ratio, 8 );
+		Serial.print( "Resistance = " ); Serial.println( Reference_Resistor * ratio, 8 );
+		float temperature = Translate_Temperature( rtd, 1000, Reference_Resistor );
 		Serial.print( "Temperature = " ); Serial.println( temperature );
 
-		//PID_Current_Temperature = temperature;
-		PID_Current_Temperature = 0;
+		PID_Current_Temperature = temperature;
+		//PID_Current_Temperature = 0;
 		previous_reading_time = current_time;
 	}
+	delay(0);
 
 
 	Work_With_Serial_Connection();
@@ -269,7 +470,7 @@ void loop()
 	{ // Update PID Stuff
 		if( !isnan( PID_Set_Temperature ) && pid.Compute() && Output_On )
 		{
-			analogWrite( D2, int( PID_Output ) );
+			analogWrite( heater_pin, int( PID_Output ) );
 			//if( !Serial.available() )
 			Serial.println( "PID Output: " + String( PID_Output ) + " Setpoint: " + String( PID_Set_Temperature ) + " Temp: " + String( PID_Current_Temperature ) );
 		}

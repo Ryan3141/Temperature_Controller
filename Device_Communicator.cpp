@@ -4,44 +4,79 @@
 
 #include "Device_Communicator.h"
 
+#include "esp_wifi.h"
+
 #include <algorithm>
+#include <map>
+
+void debug_print( const char* message )
+{
+	return;
+}
 
 void Device_Communicator::Init( const char* SSID, const char* password, const char* who_i_listen_to, const char* initial_message, unsigned int localUdpPort, Pin indicator_led_pin )
 {
+	Attempt_Connect_To_Router( SSID, password );
+
 	local_udp_port = localUdpPort;
 	Udp.begin( local_udp_port );
-	//Udp.setTimeout( 100 );
-
+	Udp.setTimeout( 100 );
 	device_listener = who_i_listen_to;
 	header_data = initial_message;
 	indicator_led = indicator_led_pin;
 	indicator_led.Set_To_Output();
-	indicator_led.Set( HIGH ); // Turn light off until it's connected
-
-	Attempt_Connect_To_Router( SSID, password );
+	indicator_led.Set( LOW ); // Turn light off until it's connected
 }
+extern void Find_Slowdown();
 
 void Device_Communicator::Update()
 {
+	//Serial.print( "B" );
 	if( !update_wait.Is_Ready() )
 		return;
 	
+	debug_print( "C" );
+	Find_Slowdown();
 	if( !Check_Wifi_Status() )
 		return;
 
+	debug_print( "D" );
+	Find_Slowdown();
 	Check_For_New_Clients();
+	//delay(0);
 
+	debug_print( "E" );
+	Find_Slowdown();
 	Check_For_Disconnects();
+	//delay(0);
 
+	debug_print( "F" );
+	Find_Slowdown();
 	for( auto & c : active_clients )
 	{
-		// If client is saying something
-		if( c.client.available() )
+		//while( c.client.available() == 0 )
+		//{
+		//}
+		int bytes_available = c.client.available();
+		//while( bytes_available = c.client.available() )
+		//{
+		//	//String line = c.client.readStringUntil( '\r' );
+		//	//Serial.print( line );
+		//	Serial.println( bytes_available );
+		//	break;
+		//}
+		//// If client is saying something
+		//Serial.println( bytes_available );
+		if( bytes_available > 0 ) // ISSUE HERE, THIS NEVER TURNS TRUE
 		{
+			//Serial.println( "Inside Loop" );
 			Read_Client_Data( c );
 			c.timeout.Reset();
 		}
 	}
+	//delay(0);
+	debug_print( "G" );
+	Find_Slowdown();
 }
 
 void Device_Communicator::Check_For_New_Clients()
@@ -52,11 +87,11 @@ void Device_Communicator::Check_For_New_Clients()
 
 	IPAddress incoming_ip = Udp.remoteIP();
 	Serial.printf( "Received %d bytes from %s, port %d\n", packetSize, incoming_ip.toString().c_str(), Udp.remotePort() );
-	char incomingPacket[ 255 ];
+	char incomingPacket[ 256 ];
 	int len = Udp.read( incomingPacket, 255 );
-	if( len > 0 )
+	if( len >= 0 )
 	{
-		incomingPacket[ len ] = 0;
+		incomingPacket[ len ] = '\0';
 	}
 	Serial.printf( "UDP packet contents: %s\n", incomingPacket );
 
@@ -87,14 +122,16 @@ void Device_Communicator::Check_For_New_Clients()
 		return;
 	}
 	// Attempt to connect to ip that just pinged us
-	active_clients.push_back( Connection{ incoming_ip } );
+	active_clients.push_back( Connection( incoming_ip ) );
 	Connection & c = active_clients.back();
-	c.client.connect( incoming_ip, local_udp_port );
+	//c.client.connect( incoming_ip, local_udp_port, 100 ); // 100ms timeout
+	c.client.connect( incoming_ip, local_udp_port ); // 100ms timeout
 	if( c.client.connected() )
 	{
 		Serial.println( "Connected" );
 		c.client.print( header_data );
-		c.client.setTimeout( 10 ); // Only grab the data if it's ready already
+		c.client.setTimeout( 1 ); // < --In seconds for some reason // Only grab the data if it's ready already
+		//c.client.setTimeout( 100 ); <-- In seconds for some reason // Only grab the data if it's ready already
 	}
 	else
 	{
@@ -111,14 +148,21 @@ void Device_Communicator::Check_For_Disconnects()
 		std::remove_if( active_clients.begin(), active_clients.end(),
 		[]( Connection & c )
 	{
-		return !c.client.connected() || c.client.status() == CLOSED || c.timeout.Is_Ready();
+		return !c.client.connected() ||
+			//c.client.status() == CLOSED ||
+			c.timeout.Is_Ready();
 	} );
 
 	// Perform finishing functions on closing connections
 	for( auto c = to_be_removed; c != active_clients.end(); ++c )
 	{
+		if( !c->client.connected() )
+			Serial.println( c->ip.toString() + ": disconnected at " + String( millis() ) );
+		//else if( c->client.status() == CLOSED )
+		//	Serial.println( c->ip.toString() + ": closed" );
+		else
+			Serial.println( c->ip.toString() + ": timed out at" + String( millis() ) );
 		c->client.stop();
-		Serial.println( c->ip.toString() + ": disconnected" );
 	}
 
 	// Finally delete the connection entries
@@ -132,8 +176,19 @@ void Device_Communicator::Connect_Controller_Listener( std::function<void( const
 
 void Device_Communicator::Read_Client_Data( Connection & c )
 {
-	c.partial_message = c.partial_message + c.client.readString();
+	{ // Update partial message with new data coming in
+		const int buffer_size = 256;
+		char data_buffer[ buffer_size ];
+		size_t bytes_read = c.client.readBytes( data_buffer, buffer_size - 1 );
+		data_buffer[ bytes_read ] = '\0';
+		int bytes_too_many = c.partial_message.length() + bytes_read - this->maximum_buffer_size;
+		if( bytes_too_many > 0 ) // If we are too big, drop the oldest bytes
+			c.partial_message = c.partial_message.substring( bytes_too_many, this->maximum_buffer_size );
 
+		c.partial_message = c.partial_message + data_buffer;// +c.client.readString();
+	}
+
+	// Parse partial message as much as possible
 	for( int end_of_line = c.partial_message.indexOf( '\n' );
 		 end_of_line != -1;
 		 end_of_line = c.partial_message.indexOf( '\n' ) )
@@ -146,29 +201,43 @@ void Device_Communicator::Read_Client_Data( Connection & c )
 	}
 }
 
-void Device_Communicator::Send_Client_Data( const String & message ) const
+void Device_Communicator::Send_Client_Data( const String & message )
 {
-	for( auto c : active_clients )
+	//Serial.println( "Clients listening = " + String(active_clients.size()) );
+	for( auto & c : active_clients )
 	{
+		//Serial.print( "Sending data to this client: " );
 		Send_Client_Data( c, message );
+		//Serial.println( c.ip.toString() );
 	}
 }
 
-void Device_Communicator::Send_Client_Data( Connection & c, const String & message ) const
+void Device_Communicator::Send_Client_Data( Connection & c, const String & message )
 {
 	//Serial.print( "Sending to " + c.client.localIP().toString() + ": " + message );
-	c.client.print( message );
+	unsigned int message_length = message.length();
+	int bytes_written = c.client.write( message.c_str(), message_length );
+	if( bytes_written != message_length )
+		Serial.printf( "Only printed %d of %d length requested in message %s\n", bytes_written, message_length, message.c_str() );
+	//c.client.flush(); <-- This would clear any incoming data
 }
 
+std::map<int, const char*> error_to_string{
+	{ WL_CONNECT_FAILED, "Failed to connect" },
+	{ WL_CONNECTION_LOST, "Lost connection" },
+	{ WL_DISCONNECTED, "Chose to disconnect" },
+	{ WL_NO_SSID_AVAIL, "No connection to gateway" }
+};
 bool Device_Communicator::Check_Wifi_Status()
 {
 	bool wifi_is_connected = false;
-	switch( WiFi.status() )
+	int wifi_status = WiFi.status();
+	switch( wifi_status )
 	{
 		case WL_CONNECTED:
 			if( !wifi_was_connected )
 			{
-				indicator_led.Set( LOW ); // Turn light on to show it's connected
+				indicator_led.Set( HIGH ); // Turn light on to show it's connected
 				Serial.println( "WiFi connected" );
 				Serial.println( "IP address: " );
 				Serial.println( WiFi.localIP() );
@@ -182,7 +251,8 @@ bool Device_Communicator::Check_Wifi_Status()
 		case WL_NO_SSID_AVAIL:
 		if( wifi_was_connected )
 			{
-				Serial.println( "WiFi disconnected" );
+				Serial.print( "WiFi disconnected: " );
+				Serial.println( error_to_string[ wifi_status ] );
 				wifi_was_connected = false;
 			}
 			if( disconnected_light_flash.Is_Ready() )
@@ -203,13 +273,16 @@ bool Device_Communicator::Check_Wifi_Status()
 
 bool Device_Communicator::Attempt_Connect_To_Router( const char* router_ssid, const char* router_password )
 {
-	delay( 500 );
+	WiFi.disconnect( true );  //disconnect form wifi to set new wifi connection
+	WiFi.mode( WIFI_STA );
+	esp_wifi_set_ps( WIFI_PS_NONE );
 	// We start by connecting to a WiFi network
 	WiFi.begin( router_ssid, router_password );
 
 	Serial.println();
 	Serial.print( "Attempting to connect to WiFi: " );
 	Serial.println( router_ssid );
+	delay( 500 );
 }
 
 

@@ -11,7 +11,11 @@
 
 #include <functional>
 #include <vector>
+#if defined(ESP8266)
 #include <ESP8266WiFi.h>
+#else
+#include <WiFi.h>
+#endif
 #include <WiFiUdp.h>
 
 #include "Handy_Types.h"
@@ -24,7 +28,7 @@ struct Connection
 	IPAddress ip;
 	WiFiClient client;
 	String partial_message{ "" };
-	Run_Periodically timeout{ Time::Seconds( 10 ) };
+	Run_Periodically timeout{ Time::Seconds( 100 ) };
 };
 
 class Device_Communicator
@@ -34,9 +38,10 @@ public:
 	void Update();
 
 	void Connect_Controller_Listener( std::function<void( const Connection & c, const String & command )> callback );
-	void Send_Client_Data( const String & message ) const;
-	void Send_Client_Data( Connection & c, const String & message ) const;
+	void Send_Client_Data( const String & message );
+	void Send_Client_Data( Connection & c, const String & message );
 
+	std::vector<Connection> active_clients;
 private:
 	bool Check_Wifi_Status();
 	void Check_For_New_Clients();
@@ -45,7 +50,6 @@ private:
 	void Read_Client_Data( Connection & c );
 
 	WiFiUDP Udp;
-	std::vector<Connection> active_clients;
 	unsigned int local_udp_port;
 	String device_listener;
 	String header_data;
@@ -54,6 +58,7 @@ private:
 	Run_Periodically disconnected_light_flash{ Time::Milliseconds( 400 ) }; // Wait between updates in milliseconds
 	Pin indicator_led{ Pin::None };
 	bool wifi_was_connected{ false };
+	int maximum_buffer_size{ 4096 };
 };
 
 #endif
