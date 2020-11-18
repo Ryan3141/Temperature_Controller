@@ -46,7 +46,7 @@ private:
 	bool Check_Wifi_Status();
 	void Check_For_New_Clients();
 	void Check_For_Disconnects();
-	bool Attempt_Connect_To_Router( const char* router_ssid, const char* router_password );
+	void Attempt_Connect_To_Router( const char* router_ssid, const char* router_password );
 	void Read_Client_Data( Connection & c );
 
 	WiFiUDP Udp;

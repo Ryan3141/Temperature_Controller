@@ -1,3 +1,5 @@
+#include <Arduino.h>
+
 #include <array>
 #include <SPI.h>
 #include <Adafruit_MAX31855.h>
@@ -22,20 +24,29 @@ const unsigned int port_to_use = 6543;
 //const int D7 = 23;
 //const int D8 = 5;
 
+const int shortcircuit_detection_pin = 35;
+const int battery1_low_detection_pin = 34;
+const int battery2_low_detection_pin = 26;
 const int heater_pin = 33;
 const std::array<int, 4> v_plus_pins = { 32, 4, 17, 16 };
 const std::array<int, 4> v_minus_pins = { 27, 22, 25, 21 };
 //const std::array<int, 4> v_minus_pins = { 21, 25, 22, 27 };
 
 // Flipped around plugs
-//const std::array<int, 16> mux_plus_pads = { 2, 1, 3, 6, 5, 8, 10, 9, 19, 20, 18, 15, 16, 13, 11, 12 };
-//const std::array<int, 16> mux_minus_pads = { 1, 4, 3, 6, 8, 7, 10, 9, 20, 17, 18, 15, 13, 14, 11, 12 };
+const std::array<int, 16> mux_plus_pads = { 2, 1, 3, 6, 5, 8, 10, 9, 19, 20, 18, 15, 16, 13, 11, 12 };
+const std::array<int, 16> mux_minus_pads = { 1, 4, 3, 6, 8, 7, 10, 9, 20, 17, 18, 15, 13, 14, 11, 12 };
+// Not sure what this is
 //const std::array<int, 16> mux_plus_pads = { 1, 2, 4, 5, 6, 7, 9, 10, 20, 19, 17, 16, 15, 14, 12, 11 };
 //const std::array<int, 16> mux_minus_pads = { 2, 3, 4, 5, 7, 8, 9, 10, 20, 19, 18, 17, 15, 14, 13, 12 };
+// Right way around plugs
 //const std::array<int, 16> mux_plus_pads = { 1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20 };
 //const std::array<int, 16> mux_minus_pads = { 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 19, 20 };
-const std::array<int, 16> mux_plus_pads = { 1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20 };
-const std::array<int, 16> mux_minus_pads = { 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 19, 20 };
+// Not correct
+//const std::array<int, 16> mux_plus_pads = { 2, 1, 3, 6, 5, 8, 10, 9, 12, 11, 13, 16, 15, 18, 20, 19 };
+//const std::array<int, 16> mux_minus_pads = { 1, 4, 3, 6, 8, 7, 10, 9, 11, 14, 13, 16, 18, 17, 20, 19 };
+
+float Newtons_Method( float resistance_ratio );
+
 
 void Find_Slowdown()
 {
@@ -140,7 +151,7 @@ const int LEDC_CHANNEL_0 = 0;
 // use 13 bit precission for LEDC timer
 const int LEDC_TIMER_13_BIT = 13;
 // use 5000 Hz as a LEDC base frequency
-const int LEDC_BASE_FREQ = 5000;
+const int LEDC_BASE_FREQ = 500;
 
 double PID_Current_Temperature = 0;
 double PID_Output = 0;
@@ -297,6 +308,14 @@ void setup()
 	delay( 4000 );
 	Initialize_Mux_Pins();
 
+	const int shortcircuit_detection_pin = 35;
+	const int battery1_low_detection_pin = 34;
+	const int battery2_low_detection_pin = 26;
+	pinMode( shortcircuit_detection_pin, INPUT );
+	pinMode( battery1_low_detection_pin, INPUT );
+	pinMode( battery2_low_detection_pin, INPUT );
+
+
 	{ // PID initialization
 		pid.SetOutputLimits( 0, 8191 );
 		pid.SetMode( AUTOMATIC );
@@ -337,14 +356,14 @@ void loop()
 	{
 		//Serial.print( "A" );
 		//Send_Message( "Temperature = 0\n" );
-		if( 0 )
+		if( false )
 		{
 			static double debug_temp = 0;
 			Send_Message( "Temperature = " + String( debug_temp ) + "\n" );
 			debug_temp += ((rand() % 1024) - 512) / 1024.;
 			PID_Current_Temperature = debug_temp;
 		}
-		if( Check_Temp_Sensor_For_Error( max31865 ) )
+		else if( Check_Temp_Sensor_For_Error( max31865 ) )
 		{
 			//uint16_t rtd = max31865.readRTD();
 			//static uint16_t rtd = 4600;
@@ -396,6 +415,14 @@ void loop()
 			//Serial.print( "After3: " );
 			//Serial.println( millis() );
 		}
+
+		int shortcircuit = digitalRead( shortcircuit_detection_pin );
+		int batter1_low = digitalRead( battery1_low_detection_pin );
+		int batter2_low = digitalRead( battery2_low_detection_pin );
+		Send_Message( "shortcircuit = " + String( shortcircuit ) + "\n" +
+					  "batter1_low = " + String( batter1_low ) + "\n" +
+					  "batter2_low = " + String( batter2_low ) + "\n" );
+
 		previous_reading_time = current_time;
 	}
 
@@ -481,6 +508,19 @@ void loop()
 }
 #endif
 
+inline float Temp_To_Resistance_Ratio( float T )
+{
+	const float A = 3.81e-3;
+	const float B = -6.02e-7;
+	const float C = -6.0e-12;
+
+	float T_2 = T * T;
+
+	float resistance_ratio = 1 + A * T + T_2 * (B + C * (T_2 - 100 * T));
+
+	return resistance_ratio;
+}
+
 ////////////////////////////////
 float Translate_Temperature( uint16_t digital_reading, float RTDnominal, float refResistor )
 {
@@ -503,26 +543,13 @@ float Translate_Temperature( uint16_t digital_reading, float RTDnominal, float r
 	return center;
 }
 
-inline float Temp_To_Resistance_Ratio( float T )
-{
-	const float A = 3.81e-3;
-	const float B = -6.02e-7;
-	const float C = -6.0e-12;
-
-	float T_2 = T * T;
-
-	float resistance_ratio = 1 + A * T + T_2 * (B + C * (T_2 - 100 * T));
-
-	return resistance_ratio;
-}
-
 inline float Derivative_Temp_To_Resistance_Ratio( float T )
 {
 	const float A = 3.81e-3;
 	const float B = -6.02e-7;
 	const float C = -6.0e-12;
 
-	float T_2 = T * T;
+	//float T_2 = T * T;
 
 	float derivative_resistance_ratio = A + T * (2 * B + C * (4 * T - 3 * 100));
 
@@ -568,7 +595,7 @@ float Adafruit_MAX31865_temperature( uint16_t binary_value, float RTDnominal, fl
 	// http://www.analog.com/media/en/technical-documentation/application-notes/AN709_0.pdf
 	const double A = 3.81e-3;
 	const double B = -6.02e-7;
-	const double C = -6.0e-12;
+	//const double C = -6.0e-12;
 
 	float Z1, Z2, Z3, Z4, Rt, temp;
 

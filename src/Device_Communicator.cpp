@@ -271,7 +271,7 @@ bool Device_Communicator::Check_Wifi_Status()
 	return wifi_is_connected;
 }
 
-bool Device_Communicator::Attempt_Connect_To_Router( const char* router_ssid, const char* router_password )
+void Device_Communicator::Attempt_Connect_To_Router( const char* router_ssid, const char* router_password )
 {
 	WiFi.disconnect( true );  //disconnect form wifi to set new wifi connection
 	WiFi.mode( WIFI_STA );
