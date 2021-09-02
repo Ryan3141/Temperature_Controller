@@ -8,11 +8,14 @@
 
 //#include "OneEuroFilter.h"
 #include "Device_Communicator.h"
+#include "C:\Tools\Login_Info\Microcontrollers.h"
 
-const char* ssid = "";
-const char* password = "";
+// const char* ssid = "";
+// const char* password = "";
 const char* who_i_listen_to = "Temperature Controller";
 const unsigned int port_to_use = 6543;
+
+extern void debug_print( const char* message );
 
 //const int D0 = 26;
 //const int D1 = 22;
@@ -151,7 +154,7 @@ const int LEDC_CHANNEL_0 = 0;
 // use 13 bit precission for LEDC timer
 const int LEDC_TIMER_13_BIT = 13;
 // use 5000 Hz as a LEDC base frequency
-const int LEDC_BASE_FREQ = 500;
+const int LEDC_BASE_FREQ = 60;
 
 double PID_Current_Temperature = 0;
 double PID_Output = 0;
@@ -202,7 +205,7 @@ bool Check_Temp_Sensor_For_Error( Adafruit_MAX31865 & max31865 )
 
 void Run_Command( const String & command )
 {
-	if( command == "PING;" )
+	if( command.length() == 0 || command == "PING;" )
 		return;
 	//Serial.print( command + "\n" );
 	String l_command = command;
@@ -354,13 +357,13 @@ void loop()
 	unsigned long current_time = millis();
 	if( current_time - previous_reading_time >= 500 ) // All temp sensors set to same resolution
 	{
-		//Serial.print( "A" );
+		debug_print( "A" );
 		//Send_Message( "Temperature = 0\n" );
 		if( false )
 		{
 			static double debug_temp = 0;
 			Send_Message( "Temperature = " + String( debug_temp ) + "\n" );
-			debug_temp += ((rand() % 1024) - 512) / 1024.;
+			debug_temp += ((rand() % 1024) - 512) / 10240.;
 			PID_Current_Temperature = debug_temp;
 		}
 		else if( Check_Temp_Sensor_For_Error( max31865 ) )
@@ -395,8 +398,10 @@ void loop()
 		{
 			//Serial.println( "Skipped due to error" );
 		}
-		
+
+		if( true )
 		{
+			debug_print( "b" );
 			//Serial.print( "Before: " );
 			//Serial.println( millis() );
 			double internal_temperature = thermocouple_sensor.readInternal();
@@ -423,6 +428,7 @@ void loop()
 					  "batter1_low = " + String( batter1_low ) + "\n" +
 					  "batter2_low = " + String( batter2_low ) + "\n" );
 
+		debug_print( "B" );
 		previous_reading_time = current_time;
 	}
 

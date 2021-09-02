@@ -1,6 +1,6 @@
-// 
-// 
-// 
+//
+//
+//
 
 #include "Device_Communicator.h"
 
@@ -11,6 +11,12 @@
 
 void debug_print( const char* message )
 {
+return;
+	static long long last_time = millis();
+	long long now = millis();
+	Serial.print( message );
+	Serial.print( now - last_time );
+	last_time = now;
 	return;
 }
 
@@ -34,7 +40,7 @@ void Device_Communicator::Update()
 	//Serial.print( "B" );
 	if( !update_wait.Is_Ready() )
 		return;
-	
+
 	debug_print( "C" );
 	Find_Slowdown();
 	if( !Check_Wifi_Status() )
@@ -130,8 +136,8 @@ void Device_Communicator::Check_For_New_Clients()
 	{
 		Serial.println( "Connected" );
 		c.client.print( header_data );
-		c.client.setTimeout( 1 ); // < --In seconds for some reason // Only grab the data if it's ready already
-		//c.client.setTimeout( 100 ); <-- In seconds for some reason // Only grab the data if it's ready already
+		// c.client.setTimeout( 1 ); // < --In seconds for some reason // Only grab the data if it's ready already
+		c.client.setTimeout( 100 ); // <-- In seconds for some reason // Only grab the data if it's ready already
 	}
 	else
 	{
@@ -176,15 +182,19 @@ void Device_Communicator::Connect_Controller_Listener( std::function<void( const
 
 void Device_Communicator::Read_Client_Data( Connection & c )
 {
+	debug_print( "f" );
 	{ // Update partial message with new data coming in
 		const int buffer_size = 256;
 		char data_buffer[ buffer_size ];
+		debug_print( "x-" );
 		size_t bytes_read = c.client.readBytes( data_buffer, buffer_size - 1 );
+		debug_print( "x" );
 		data_buffer[ bytes_read ] = '\0';
 		int bytes_too_many = c.partial_message.length() + bytes_read - this->maximum_buffer_size;
 		if( bytes_too_many > 0 ) // If we are too big, drop the oldest bytes
 			c.partial_message = c.partial_message.substring( bytes_too_many, this->maximum_buffer_size );
 
+		debug_print( "g" );
 		c.partial_message = c.partial_message + data_buffer;// +c.client.readString();
 	}
 
