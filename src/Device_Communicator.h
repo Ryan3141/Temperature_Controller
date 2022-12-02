@@ -53,6 +53,10 @@ private:
 	unsigned int local_udp_port;
 	String device_listener;
 	String header_data;
+	const char* SSID = "";
+	const char* password = "";
+	bool retry_wifi = false;
+	Run_Periodically retry_wifi_timer{ Time::Milliseconds( 10000 ) };
 	std::vector< std::function<void( const Connection & c, const String & command )> > controller_callbacks;
 	Run_Periodically update_wait{ Time::Milliseconds( 1000 ) }; // Wait between updates in milliseconds
 	Run_Periodically disconnected_light_flash{ Time::Milliseconds( 400 ) }; // Wait between updates in milliseconds
@@ -60,6 +64,8 @@ private:
 	bool wifi_was_connected{ false };
 	int maximum_buffer_size{ 4096 };
 };
+
+void debug_print( const char* message );
 
 #endif
 

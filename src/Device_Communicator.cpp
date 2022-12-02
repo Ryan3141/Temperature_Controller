@@ -24,6 +24,8 @@ void Device_Communicator::Init( const char* SSID, const char* password, const ch
 {
 	Attempt_Connect_To_Router( SSID, password );
 
+	this->SSID = SSID;
+	this->password = password;
 	local_udp_port = localUdpPort;
 	Udp.begin( local_udp_port );
 	Udp.setTimeout( 100 );
@@ -37,27 +39,18 @@ extern void Find_Slowdown();
 
 void Device_Communicator::Update()
 {
-	//Serial.print( "B" );
 	if( !update_wait.Is_Ready() )
 		return;
 
-	debug_print( "C" );
-	Find_Slowdown();
 	if( !Check_Wifi_Status() )
 		return;
 
-	debug_print( "D" );
-	Find_Slowdown();
 	Check_For_New_Clients();
 	//delay(0);
 
-	debug_print( "E" );
-	Find_Slowdown();
 	Check_For_Disconnects();
 	//delay(0);
 
-	debug_print( "F" );
-	Find_Slowdown();
 	for( auto & c : active_clients )
 	{
 		//while( c.client.available() == 0 )
@@ -80,9 +73,6 @@ void Device_Communicator::Update()
 			c.timeout.Reset();
 		}
 	}
-	//delay(0);
-	debug_print( "G" );
-	Find_Slowdown();
 }
 
 void Device_Communicator::Check_For_New_Clients()
@@ -264,12 +254,16 @@ bool Device_Communicator::Check_Wifi_Status()
 				Serial.print( "WiFi disconnected: " );
 				Serial.println( error_to_string[ wifi_status ] );
 				wifi_was_connected = false;
+				retry_wifi = true;
+				retry_wifi_timer.Reset();
 			}
 			if( disconnected_light_flash.Is_Ready() )
 			{
 				disconnected_light_flash.Reset();
 				indicator_led.Toggle(); // Turn light on to show it's connected
 			}
+			if( retry_wifi && retry_wifi_timer.Is_Ready() )
+				Attempt_Connect_To_Router( this->SSID, this->password );
 			wifi_is_connected = false;
 		break;
 		default:
@@ -283,7 +277,7 @@ bool Device_Communicator::Check_Wifi_Status()
 
 void Device_Communicator::Attempt_Connect_To_Router( const char* router_ssid, const char* router_password )
 {
-	WiFi.disconnect( true );  //disconnect form wifi to set new wifi connection
+	WiFi.disconnect( true );  //disconnect from wifi to set new wifi connection
 	WiFi.mode( WIFI_STA );
 	esp_wifi_set_ps( WIFI_PS_NONE );
 	// We start by connecting to a WiFi network
