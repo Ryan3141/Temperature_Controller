@@ -9,7 +9,12 @@
 #include "Handy_Types.h"
 #include "Shift_Register.h"
 #include "Device_Communicator.h"
+// Compiling on windows
+#if defined(_WIN32) || defined(_WIN64)
 #include "C:\Tools\Login_Info\Microcontrollers.h"
+#else // Compiling on linux
+#include "/home/ryan/Tools/Login_Info/Microcontrollers.h"
+#endif
 
 const char* who_i_listen_to = "Temperature Controller";
 const unsigned int port_to_use = 6543;
